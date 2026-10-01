@@ -15,18 +15,27 @@ Connecting player ...
 Kicked: "No Steam logon"
 ```
 
-根因是 Steam 认证票据校验回调 `CSteam3Server::OnValidateAuthTicketResponseHelper` 收到了非 OK 的 `EAuthSessionResponse` 返回码，服务端据此把玩家断开。触发原因包括：
+根因是 Steam 认证票据校验回调 `CSteam3Server::OnValidateAuthTicketResponseHelper` 收到了非 OK 的 `EAuthSessionResponse` 返回码，服务端据此把玩家断开。
 
-| Auth code | 枚举名 | 含义 |
-|-----------|--------|------|
-| 1 | `UserNotConnectedToSteam` | 用户（暂时）未连接到 Steam |
-| 6 | `AuthTicketCanceled` | 认证票据被取消 |
-| 7 | `AuthTicketInvalidAlreadyUsed` | 票据已被使用过 |
-| 8 | `AuthTicketInvalid` | 票据无效 |
-| 5 | `VACCheckTimedOut` | VAC 检查超时（"Client timed out"） |
-| 3 | `VACBanned` | **VAC 封禁（本插件不做拦截，必须踢）** |
+### 完整的 9 种 `EAuthSessionResponse`（code 0-8）
+
+| Auth code | 枚举名 | 含义 | 原始行为 | 本插件 |
+|-----------|--------|------|---------|--------|
+| 0 | `OK` | 认证通过 | 继续 | 不干预 |
+| 1 | `UserNotConnectedToSteam` | 用户（暂时）未连接到 Steam | 踢「No Steam logon」 | ✅ **拦截** |
+| 2 | `NoLicenseOrExpired` | 未拥有此游戏 / 授权过期 | 踢「This Steam account does not own this game」 | 不拦截（DRM 层已挡） |
+| 3 | `VACBanned` | **VAC 封禁** | 踢「VAC banned from secure server」 | ⛔ **绝不拦截**（真封禁必须生效） |
+| 4 | `LoggedInElseWhere` | 账号在别处登录 | 踢「being used in another game」 | 不拦截 |
+| 5 | `VACCheckTimedOut` | VAC 检查超时 | 踢「Client timed out」 | ⚙️ 可选（`block_code5`，默认关） |
+| 6 | `AuthTicketCanceled` | 认证票据被取消 | 踢「No Steam logon」 | ✅ **拦截** |
+| 7 | `AuthTicketInvalidAlreadyUsed` | 票据已被使用过 | 踢「No Steam logon」 | ✅ **拦截** |
+| 8 | `AuthTicketInvalid` | 票据无效 | 踢「No Steam logon」 | ✅ **拦截** |
+
+> 上表 9 种 code 与 `switch (EAuthSessionResponse)` 跳转表 `0x2b5a80` 的 9 个表项**一一对应**（见下方逆向依据）。
 
 绝大多数 `No Steam logon` 踢出属于 **1/6/7/8**，多为玩家网络/Steam 客户端瞬时抖动，并非真的作弊或断线。本插件将这几类返回码放行，玩家留在服务器里。
+
+> ⚠️ **codes 2 / 3 / 4 保持原样不拦**：2=没买游戏（DRM 层已挡）、3=VAC 封禁（必须踢）、4=异地登录（账号安全提示，应保留）。
 
 ---
 
@@ -48,10 +57,21 @@ Kicked: "No Steam logon"
           ... jmp [vtable+0x3c]           ; CBaseClient::Disconnect
 ```
 
-`switch (EAuthSessionResponse)` 跳转表 `0x2b5a80`：
-- `case 1,6,7,8` → `0x201148`（踢出文案 `"No Steam logon"`）
-- `case 5` → `0x2011d0`（踢出文案 `"Client timed out"`）
-- `case 3` → VAC banned（保留原逻辑，必须踢）
+`switch (EAuthSessionResponse)` 跳转表 `0x2b5a80`（**9 项，code 0-8 全覆盖**）：
+
+| code | 跳转目标 | 踢出文案 | 备注 |
+|------|---------|---------|------|
+| 0 | `0x2011f0` | `"Client dropped by server"` | OK 路径（正常流程） |
+| 1 | `0x201148` | `"No Steam logon"` | 有 `m_bShuttingDown` 保护 |
+| 2 | `0x201180` | `"This Steam account does not own this game..."` | |
+| 3 | `0x2011a0` | `"VAC banned from secure server"` | 有保护 |
+| 4 | `0x2011b8` | `"This Steam account is being used in another game..."` | 有保护 |
+| 5 | `0x2011d0` | `"Client timed out"` | |
+| 6 | `0x201148` | `"No Steam logon"` | 有保护 |
+| 7 | `0x201148` | `"No Steam logon"` | 有保护 |
+| 8 | `0x201148` | `"No Steam logon"` | 有保护 |
+
+> 「有保护」= 该分支先 `cmp dword ptr [edi+0x98], 1; je skip`（`[edi+0x98]` = `CSteam3Server::m_bShuttingDown`，服务器关闭时跳过踢人）。**Patch 1 正是把 code 1/6/7/8 这条 `je` 改成 `jmp`，让其无条件走「不踢」路径。**
 
 ### 补丁内容
 

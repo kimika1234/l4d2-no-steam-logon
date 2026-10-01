@@ -10,10 +10,20 @@
  *   0x201153: mov [ebp+0xc], 0x2b5566        ; "No Steam logon"
  *   ... jmp [vtable+0x3c]                    ; CBaseClient::Disconnect
  *
- *   switch(EauthSessionResponse) [0x2b5a80]:
- *     case 1,6,7,8 -> 0x201148 (踢出文案 "No Steam logon")
- *     case 5       -> 0x2011d0 (踢出文案 "Client timed out")
- *     case 3       -> VAC banned (必须踢, 不拦)
+ *   switch(EauthSessionResponse) [0x2b5a80]  (9 entries, code 0-8):
+ *     0 -> 0x2011f0  Disconnect("Client dropped by server")   [OK path]
+ *     1 -> 0x201148  Disconnect("No Steam logon")             [guarded, patched]
+ *     2 -> 0x201180  Disconnect("This Steam account does not own this game...")
+ *     3 -> 0x2011a0  Disconnect("VAC banned from secure server")  [guarded, MUST KICK]
+ *     4 -> 0x2011b8  Disconnect("This Steam account is being used in another game...") [guarded]
+ *     5 -> 0x2011d0  Disconnect("Client timed out")           [optional patch]
+ *     6 -> 0x201148  Disconnect("No Steam logon")             [guarded, patched]
+ *     7 -> 0x201148  Disconnect("No Steam logon")             [guarded, patched]
+ *     8 -> 0x201148  Disconnect("No Steam logon")             [guarded, patched]
+ *
+ *   guarded = the branch first does  cmp [edi+0x98],1 ; je skip  (m_bShuttingDown).
+ *   Patch 1 flips that je -> jmp so codes 1/6/7/8 always take the "do not kick" path.
+ *   Codes 2/3/4 are left intact (no license / VAC ban / logged in elsewhere).
  *
  * 补丁: 把 0x20114f 的 je (0x74 0x1F) 改成 jmp (0xEB 0x1F),
  *       使 code 1/6/7/8 全部走 m_bShuttingDown==1 的"不踢"路径。
