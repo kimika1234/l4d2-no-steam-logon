@@ -6,3 +6,7 @@
 .idea/
 Thumbs.db
 desktop.ini
+
+# Release helper (generated during publish)
+dist/rel_body*.json
+
