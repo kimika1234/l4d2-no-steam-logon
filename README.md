@@ -129,25 +129,6 @@ pkg/
 
 ---
 
-## ⚠️ 重要：`unload_all` + `load_lock` 陷阱
-
-本农场部分配置（`sm_warmode_on.cfg` 战备模式、难度系统 cfg、confogl 竞技预设、投票预设等）包含：
-
-```
-sm plugins unload_all
-sm plugins load_lock
-```
-
-这会把**不在白名单里的插件静默卸载并锁死**。部署本插件后，若这些 cfg 存在，需要在每个 `load_lock` 之前插入：
-
-```
-sm plugins load l4d2_block_no_steam_logon_all.smx
-```
-
-**验证是否真的在跑，以 RCON `sm plugins info l4d2_block_no_steam_logon_all.smx` 为准**，不要只看日志里的 `Patch enabled`（日志有记录 ≠ 插件当前加载）。
-
----
-
 ## 构建
 
 ```bash
