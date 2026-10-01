@@ -42,7 +42,7 @@ Kicked: "No Steam logon"
 ## 逆向依据（Linux `engine_srv.so`）
 
 目标库：`engine_srv.so`
-- MD5：`0ee571682d63f798ac07d4bc238beb4f`（45 / 103 全农场同款）
+- MD5：`0ee571682d63f798ac07d4bc238beb4f`（L4D2 官方 Linux 服务端）
 
 函数：`CSteam3Server::OnValidateAuthTicketResponseHelper`
 - Linux 符号：`_ZN13CSteam3Server34OnValidateAuthTicketResponseHelperEP11CBaseClient20EAuthSessionResponse`
