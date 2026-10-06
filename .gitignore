@@ -10,3 +10,9 @@ desktop.ini
 # Release helper (generated during publish)
 dist/rel_body*.json
 
+# Reverse-engineering work dir (engine.dll copy + scratch scripts)
+re/
+
+# Local promo assets (cover art / generation scripts — not part of the plugin source)
+assets/
+

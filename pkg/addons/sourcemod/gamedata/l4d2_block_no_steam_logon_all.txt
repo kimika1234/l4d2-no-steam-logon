@@ -1,45 +1,122 @@
 /*
  * gamedata: l4d2_block_no_steam_logon_all.txt
  *
+ * 跨平台内存补丁：(linux engine_srv.so) + (windows engine.dll)
+ *
+ * ===================== Linux =====================
  * 目标: engine_srv.so (md5 0ee571682d63f798ac07d4bc238beb4f, 45/103 同款)
- * CSteam3Server::OnValidateAuthTicketResponseHelper  @ 0x2010e0 (linux)
+ *   CSteam3Server::OnValidateAuthTicketResponseHelper @ 0x2010e0
+ *   符号: _ZN13CSteam3Server34OnValidateAuthTicketResponseHelperEP11CBaseClient20EAuthSessionResponse
  *
- * Patch1 (SkipNoSteamLogonKick): offset 0x6F 处 je 0x201170 -> jmp
- *   linux 原始: 74 1F      (je +0x1F)
- *   linux 修改: EB 1F      (jmp +0x1F)
- *   作用: auth codes 1/6/7/8 全部走 m_bShuttingDown==1 的"不踢"路径
+ *   分支守卫:  cmp dword ptr [edi+0x98], 1 ; je skip   (m_bShuttingDown@+0x98)
+ *   若 code 1/6/7/8 分支前 `je 0x201170` (74 1F)，patch 改为 jmp (EB 1F) =>
+ *     无条件走「不踢」路径。
+ *   code 5 走 5 字节改写 jmp（可选）。
  *
- * Patch2 (SkipClientTimedOut): offset 0xF0 处 5 字节改写 jmp 0x201170
- *   linux 原始: 8B 03 89 5D 08  (mov eax,[ebx]; mov [ebp+8],ebx)
- *   linux 修改: E9 9B FF FF FF  (jmp 0x201170, rel -0x65)
- *   作用: auth code 5 (VACCheckTimedOut, "Client timed out") 不踢
+ * ===================== Windows =====================
+ * 目标: engine.dll (x86, ImageBase 0x10000000)
+ *   Windows 服务端 "Left 4 Dead 2 Dedicated Server/bin/engine.dll"
+ *   md5 A16CD381409BAB749909D5000C2302D8 (srcds 版)
+ *   函数: CSteam3Server::OnValidateAuthTicketResponseHelper @ RVA 0x12d750
+ *         (无符号，通过 signature 定位)
  *
- * windows 待逆向确认后补充。
+ *   反编译 (Ghidra 12.1.4) 确认结构:
+ *     switch(EAuthSessionResponse) {          // param_3 = code
+ *       case 1: if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon"); return; } break;
+ *       case 2: Disconnect("...does not own this game..."); return;
+ *       case 3: if (*(int*)(this+0x84) != 1) { Disconnect("VAC banned..."); return; } break;
+ *       case 4: if (*(int*)(this+0x84) != 1) { Disconnect("...another location"); return; } break;
+ *       case 5: Disconnect("Client timed out"); return;
+ *       case 6: if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon"); return; } break;
+ *       case 7:
+ *       case 8: if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon"); return; } break;
+ *       default: Disconnect("Client dropped by server");
+ *     }
+ *     this+0x84 == m_bShuttingDown
+ *
+ *   switch 跳转表 @ RVA 0x12d898 (8 项, code 1..8):
+ *     code 1 -> 0x12d7ab   [守卫 je 0x12d891 @ 0x12d7b2]
+ *     code 2 -> 0x12d7f3   (无守卫)
+ *     code 3 -> 0x12d80a   [守卫]
+ *     code 4 -> 0x12d7cf   [守卫]
+ *     code 5 -> 0x12d86a   (无守卫)
+ *     code 6 -> 0x12d82a   [守卫 je 0x12d891 @ 0x12d831]
+ *     code 7 -> 0x12d84a   [守卫 je 0x12d891 @ 0x12d851]
+ *     code 8 -> 0x12d84a   (与 code 7 共用)
+ *
+ *   patch 三处守卫 je -> jmp（全部跳向 0x12d891 = 不踢/ret 8）:
+ *     code 1  @ entry+0x62  (RVA 0x12d7b2): 0F 84 D9 00 00 00 -> E9 DA 00 00 00 90
+ *     code 6  @ entry+0xE1  (RVA 0x12d831): 74 5E             -> EB 5E
+ *     code 7/8@ entry+0x101 (RVA 0x12d851): 74 3E             -> EB 3E
+ *
+ *   注意: code 1 是近跳(6B)，patch 为 5B jmp + 1B NOP(0x90) 保持字节等长；
+ *         code 6/7/8 是短跳(2B)，直接 opcode 74->EB。
+ *
+ * signature 唯一性: 在 engine.dll 全镜像中仅 1 处匹配 (0x12d750)。
  */
 "Games"
 {
 	"left4dead2"
 	{
+		"Offsets"
+		{
+			// 运行时平台标识：GameConfGetOffset(gd,"OS")
+			// 0 = windows, 1 = linux
+			"OS"
+			{
+				"windows"	"0"
+				"linux"		"1"
+			}
+		}
+
 		"Signatures"
 		{
 			"CSteam3Server::OnValidateAuthTicketResponseHelper"
 			{
 				"library"	"engine"
 				"linux"		"@_ZN13CSteam3Server34OnValidateAuthTicketResponseHelperEP11CBaseClient20EAuthSessionResponse"
-				"windows"	"\\x55\\x8B\\xEC\\x53\\x56\\x8B\\x75\\x2A\\x8B\\x46\\x2A\\x8B\\x50\\x2A\\x57\\x8B\\x7D\\x2A\\x83\\xC6\\x2A\\x8B\\xD9\\x57\\x8B\\xCE\\xFF\\xD2\\x50\\x68\\x2A\\x2A\\x2A\\x2A\\xFF\\x15\\x2A\\x2A\\x2A\\x2A\\x8B\\x06\\x8B\\x50\\x2A\\x83\\xC4\\x2A\\x57\\x8B\\xCE\\xFF\\xD2"
+				"windows"	"\x55\x8B\xEC\x53\x56\x8B\x75\x08\x8B\x46\x04\x8B\x50\x44\x57\x8B\x7D\x0C\x83\xC6\x04\x8B\xD9\x57\x8B\xCE\xFF\xD2\x50\x68\x2A\x2A\x2A\x2A\xFF\x15\x2A\x2A\x2A\x2A\x8B\x06\x8B\x50\x44\x83\xC4\x0C\x57\x8B\xCE\xFF\xD2\x50\x68\x2A\x2A\x2A\x2A\x68\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A\x8D\x47\xFF\x83\xC4\x10\x83\xF8\x07\x0F\x87\x2A\x2A\x2A\x2A\xFF\x24\x85\x2A\x2A\x2A\x2A"
 			}
 		}
 
 		"MemPatches"
 		{
-			"OnValidateAuthTicketResponseHelper::SkipNoSteamLogonKick"
+			"OnValidateAuthTicketResponseHelper::SkipNoSteamLogonKick_Code1"
 			{
 				"signature"	"CSteam3Server::OnValidateAuthTicketResponseHelper"
 				"linux"
 				{
 					"offset"	"6Fh"
-					"verify"	"\\x74\\x1F"
-					"patch"		"\\xEB\\x1F"
+					"verify"	"\x74\x1F"
+					"patch"		"\xEB\x1F"
+				}
+				"windows"
+				{
+					"offset"	"62h"
+					"verify"	"\x0F\x84\xD9\x00\x00\x00"
+					"patch"		"\xE9\xDA\x00\x00\x00\x90"
+				}
+			}
+
+			"OnValidateAuthTicketResponseHelper::SkipNoSteamLogonKick_Code6"
+			{
+				"signature"	"CSteam3Server::OnValidateAuthTicketResponseHelper"
+				"windows"
+				{
+					"offset"	"E1h"
+					"verify"	"\x74\x5E"
+					"patch"		"\xEB\x5E"
+				}
+			}
+
+			"OnValidateAuthTicketResponseHelper::SkipNoSteamLogonKick_Code78"
+			{
+				"signature"	"CSteam3Server::OnValidateAuthTicketResponseHelper"
+				"windows"
+				{
+					"offset"	"101h"
+					"verify"	"\x74\x3E"
+					"patch"		"\xEB\x3E"
 				}
 			}
 
@@ -49,8 +126,18 @@
 				"linux"
 				{
 					"offset"	"F0h"
-					"verify"	"\\x8B\\x03\\x89\\x5D\\x08"
-					"patch"		"\\xE9\\x9B\\xFF\\xFF\\xFF"
+					"verify"	"\x8B\x03\x89\x5D\x08"
+					"patch"		"\xE9\x9B\xFF\xFF\xFF"
+				}
+				"windows"
+				{
+					// 改写 code5 分支首指令 (entry+0x11A) 为 jmp 0x12d891（不踢/ret 8）
+					// 0x12d86a: 8B 06 8B 48 34 (mov eax,[esi]; mov ecx,[eax+0x34])
+					//         -> E9 22 00 00 00 (jmp 0x12d891, rel32=+0x22)
+					// 注意: 不能改跳转表项——那是 HIGHLOW 重定位数据，运行时值随 ASLR 变
+					"offset"	"11Ah"
+					"verify"	"\x8B\x06\x8B\x48\x34"
+					"patch"		"\xE9\x22\x00\x00\x00"
 				}
 			}
 		}

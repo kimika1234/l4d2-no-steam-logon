@@ -2,7 +2,9 @@
 
 完全阻止 L4D2 服务器上恼人的 **"No Steam logon"** 踢出 —— 让玩家不再被莫名其妙的 Steam 认证失败踢下线。
 
-> 这是一个 **引擎内存补丁（Memory Patch）** 插件：直接改写 `engine_srv.so` 里 Steam 认证回调函数的判断分支，从**根**上阻止踢出，而不是靠条件苛刻的 Hook 拦截。
+> 这是一个 **引擎内存补丁（Memory Patch）** 插件：直接改写 `engine_srv.so`（Linux）/ `engine.dll`（Windows）里 Steam 认证回调函数的判断分支，从**根**上阻止踢出，而不是靠条件苛刻的 Hook 拦截。
+>
+> **双平台支持**：同一个 `.smx` 通吃 Linux 与 Windows 服务端（运行时自动识别平台）。
 
 ---
 
@@ -91,6 +93,93 @@ Kicked: "No Steam logon"
 
 ---
 
+## 逆向依据（Windows `engine.dll`）
+
+> 由 Ghidra 12.1.4 反编译 + capstone 交叉验证。
+
+目标库：`engine.dll`（x86 / PE32，ImageBase `0x10000000`）
+- 来自 **L4D2 Dedicated Server**（`Left 4 Dead 2 Dedicated Server/bin/engine.dll`）
+- MD5：`A16CD381409BAB749909D5000C2302D8`
+- 函数：`CSteam3Server::OnValidateAuthTicketResponseHelper` @ RVA `0x12d750`（无符号，靠 signature 定位）
+
+Ghidra 反编译结构（与 Linux 完全同构）：
+
+```c
+switch (code) {                       // code = EAuthSessionResponse
+case 1:  if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon\n"); return; } break;
+case 2:  Disconnect("...does not own this game..."); return;
+case 3:  if (*(int*)(this+0x84) != 1) { Disconnect("VAC banned from secure server"); return; } break;
+case 4:  if (*(int*)(this+0x84) != 1) { Disconnect("...being used in another location"); return; } break;
+case 5:  Disconnect("Client timed out"); return;
+case 6:  if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon\n"); return; } break;
+case 7:
+case 8:  if (*(int*)(this+0x84) != 1) { Disconnect("No Steam logon\n"); return; } break;
+default: Disconnect("Client dropped by server");
+}
+```
+
+其中 `this+0x84` = `m_bShuttingDown`（Linux 版是 `+0x98`，Windows 版偏移不同）。
+
+`switch` 跳转表 @ RVA `0x12d898`（8 项，code 1..8）：
+
+| code | 跳转目标 | 守卫 | 踢出文案 |
+|------|---------|------|---------|
+| 1 | `0x12d7ab` | `cmp [ebx+0x84],1; je 0x12d891` | `"No Steam logon"` |
+| 2 | `0x12d7f3` | 无 | `"...does not own this game..."` |
+| 3 | `0x12d80a` | `cmp [ebx+0x84],1; je skip` | `"VAC banned from secure server"` |
+| 4 | `0x12d7cf` | `cmp [ebx+0x84],1; je skip` | `"...another location"` |
+| 5 | `0x12d86a` | 无 | `"Client timed out"` |
+| 6 | `0x12d82a` | `cmp [ebx+0x84],1; je 0x12d891` | `"No Steam logon"` |
+| 7 | `0x12d84a` | `cmp [ebx+0x84],1; je 0x12d891` | `"No Steam logon"` |
+| 8 | `0x12d84a` | （与 7 共用） | `"No Steam logon"` |
+
+> **与 Linux 的关键差异**：Linux 版 code 1/6/7/8 **共用同一条 `je`（`0x20114f`）**；Windows 版它们**各有独立守卫（3 处 `je`）**，所以 Windows 需要 3 个 patch。
+
+### 补丁内容（Windows）
+
+三处守卫 `je` 全部改为 `jmp`（都跳向 `0x12d891` = 不踢/`ret 8`）：
+
+| Patch | 相对 signature 偏移 | RVA | 原始 | 修改 |
+|-------|------|-----|------|------|
+| Code1 | `0x62`  | `0x12d7b2` | `0F 84 D9 00 00 00`（je 近跳，6B） | `E9 DA 00 00 00 90`（jmp + NOP，6B） |
+| Code6 | `0xE1`  | `0x12d831` | `74 5E`（je 短跳，2B） | `EB 5E`（jmp，2B） |
+| Code7/8 | `0x101` | `0x12d851` | `74 3E`（je 短跳，2B） | `EB 3E`（jmp，2B） |
+
+> Code1 是 6 字节近跳，改成 5 字节 `jmp rel32` + 1 字节 `NOP(0x90)` 保持字节等长，不破坏后续指令对齐。
+>
+> **Signature（唯一匹配）**：
+> ```
+> 55 8B EC 53 56 8B 75 08 8B 46 04 8B 50 44 57 8B 7D 0C 83 C6 04 8B D9 57 8B CE FF D2 50
+> 68 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 8B 06 8B 50 44 83 C4 0C 57 8B CE FF D2 50 68 ?? ?? ?? ??
+> 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8D 47 FF 83 C4 10 83 F8 07 0F 87 ?? ?? ?? ?? FF 24 85 ?? ?? ?? ??
+> ```
+>
+**Patch — SkipClientTimedOut（code 5，默认关闭）**
+
+- **Linux**：`offset 0xF0`，`8B 03 89 5D 08` → `E9 9B FF FF FF`（改写分支为 jmp 0x201170）
+- **Windows**：改 **switch 跳转表 code5 项**（`table[4]` @ `entry+0x158`）
+  - 位置：RVA `0x12d8a8`（跳转表 @ `0x12d898` + 4×4）
+  - `verify = 6A D8 12 10`（= `0x1012d86a`，原「踢出」分支）
+  - `patch  = 91 D8 12 10`（= `0x1012d891`，「不踢」收尾 `pop...ret 8`）
+  - 效果：code 5 直接跳转表指向不踢路径 —— 比改指令更干净，4 字节搞定
+
+> Windows 版 code 5 分支**没有守卫**（直接调 `Disconnect`），所以不走「改 je 为 jmp」的套路，
+> 而是直接改跳转表项让它指向函数收尾。两平台 code5 均已支持。
+
+### 真机验证
+
+在 Windows 服务端（srcds.exe + MetaMod + SourceMod 1.12 + sourcescramble）实测启动日志：
+
+```
+[l4d2_block_no_steam_logon_all.smx] [BlockNoSteamLogonAll] platform=windows, loaded 3 patch handle(s), code5=no
+[l4d2_block_no_steam_logon_all.smx] [BlockNoSteamLogonAll] Enabled 3 patch(es): codes 1/6/7/8 will NOT kick
+[BlockNoSteamLogonAll] 'No Steam logon' block ENABLED (windows, 3 patch)
+```
+
+3 个 patch 的 `Validate()`（verify 字节比对）与 `Enable()` 均成功 —— 引擎侧确认 signature/offset 完全正确。
+
+---
+
 ## 安装
 
 把 `pkg/` 下的内容合并进服务器游戏根目录（`left4dead2/` 所在目录）：
@@ -113,7 +202,12 @@ pkg/
 ### 依赖
 
 - SourceMod **1.12+**（`sourcescramble` 扩展；1.11 编译器会报 custom destructors 错误）
-- Linux 服务端（本补丁仅含 linux 签名/偏移）
+- **Linux** 或 **Windows** 服务端均可（同一个 `.smx` 通吃，运行时自动识别平台）
+  - Linux → 打在 `engine_srv.so`
+  - Windows → 打在 `engine.dll`
+
+> 同一个 `.smx` 同时支持两端 —— 平台检测靠 gamedata 里的 `Offsets/OS`（`GameConfGetOffset`），
+> 无需分别编译，也不需要单独的 Windows 版插件。
 
 ---
 
@@ -130,6 +224,19 @@ pkg/
 ---
 
 ## 构建
+
+**Windows（一键，含打包）**：
+
+```powershell
+# 需要 SM 1.12 的 spcomp64.exe + include 目录（含 sourcescramble.inc）
+powershell -ExecutionPolicy Bypass -File build.ps1
+# 或指定路径：
+# powershell -File build.ps1 -SPCOMP <spcomp64.exe> -INCLUDE <include目录>
+```
+
+产出 `dist/l4d2_block_no_steam_logon_all.smx` + `dist/SHA256SUMS.txt`，并同步刷新 `pkg/`。
+
+**手动（任意平台）**：
 
 ```bash
 # 需要 SourceMod 1.12 编译器 spcomp（64 位）
